@@ -16,10 +16,11 @@ be resumed:
         audio/section-01.mp3 ...   # narration clips (Google Cloud TTS, Standard voice)
         audio/section-01.words.json ...   # per-word TTS timings (SSML <mark>) -> karaoke captions
 
-You give a TITLE (and, optionally, a short description) and the agent writes the
-WHOLE script in one go — a punchy story plus a per-section image prompt sharing one
-visual style — then shows it as clean, professionally formatted JSON to confirm or
-change, then generates the media, then renders the MP4.
+You tell the agent what the video should be about — optionally with structure, e.g.
+"top 3 … — 4 scenes: intro + one per item" — and it writes the WHOLE script in one
+go: a punchy story plus a per-section image prompt sharing one visual style. It
+shows the scenes and the style for you to confirm or change, then generates the
+media, then renders the MP4.
 
 Resuming a previous project is OFF by default. Set LOAD_LAST_PROJECT = True to have
 the agent list saved projects on startup and offer to CONTINUE one — picking up
@@ -84,7 +85,7 @@ TTS_VOICE = "en-US-Standard-C"
 
 # How many sections (scenes) a video has. The user picks within
 # [SECTIONS_MIN, SECTIONS_MAX]; SECTIONS_DEFAULT is used when they don't care.
-SECTIONS_DEFAULT = 7
+SECTIONS_DEFAULT = 5
 SECTIONS_MIN = 3
 SECTIONS_MAX = 12
 
@@ -111,6 +112,23 @@ def _fake() -> bool:
         os.environ.get("VIDEO_AGENT_FAKE_MEDIA") == "1"
         or os.environ.get("VIDEO_AGENT_FAKE_IMAGES") == "1"
     )
+
+
+def _upload_to_gcs(bucket: str, path: Path, object_name: str) -> str:
+    """Upload `path` to gs://<bucket>/<object_name> and return its public https
+    download URL.
+
+    Content-Disposition=attachment makes a browser DOWNLOAD the file when the link
+    is clicked (rather than trying to play it). google-cloud-storage is imported
+    lazily so the dependency is only needed when VIDEO_BUCKET is set (i.e. on the
+    Docker / Cloud Run deploy), not for plain local `adk web`."""
+    from google.cloud import storage
+    client = storage.Client(project=os.environ.get("GOOGLE_CLOUD_PROJECT") or None)
+    blob = client.bucket(bucket).blob(object_name)
+    blob.content_disposition = f'attachment; filename="{object_name}"'
+    blob.cache_control = "no-store"  # re-renders reuse the name; don't serve a stale copy
+    blob.upload_from_filename(str(path), content_type="video/mp4")
+    return f"https://storage.googleapis.com/{bucket}/{object_name}"
 
 
 def _slugify(title: str) -> str:
@@ -586,8 +604,10 @@ def save_video_script(
 ) -> dict:
     """Save a planned video script to workdir/<slug>/script.json.
 
-    Call this only AFTER the user approves the story. Returns it (including
-    `json_text`, the exact JSON to show the user).
+    Call this once you've written the full script (story + matched scenes), to save
+    it before showing the user the Style + Scenes summary to confirm. Returns
+    `json_text` (the saved JSON) for reference — but do NOT dump it to the user;
+    show the clean Style + Scenes summary instead.
 
     Args:
         title: The title you created for the video.
@@ -961,16 +981,18 @@ async def render_video(slug: str = "", tool_context: ToolContext = None) -> dict
     Each scene shows its image as a full-screen background while its narration
     audio plays, with the scene text shown as on-screen captions. Requires every
     scene to already have BOTH an image and an audio file. The MP4 is saved to
-    workdir/<slug>/video.mp4 AND attached as an artifact so it plays inline in
-    the `adk web` dev UI.
+    workdir/<slug>/video.mp4. If VIDEO_BUCKET is set (the Docker image / Cloud Run),
+    the MP4 is uploaded there and a public download link is returned; otherwise it
+    is attached as an artifact so it plays inline in the `adk web` dev UI.
 
     Args:
         slug: Which project. Empty = most recent project.
 
     Returns:
-        On success: {"status","slug","video","artifact","scenes","size_mb"}.
-        `artifact` is the video filename shown/playable in the dev UI (null if
-        embedding was skipped). On failure: {"status":"error","message":...}.
+        On success: {"status","slug","video","artifact","download_url",
+        "download_error","scenes","size_mb"}. With VIDEO_BUCKET set, `download_url`
+        is a public link to the uploaded MP4 and `artifact` is null; otherwise the
+        MP4 is inlined as `artifact`. On failure: {"status":"error","message":...}.
     """
     resolved = _resolve_slug(slug)
     if resolved is None:
@@ -1056,10 +1078,26 @@ async def render_video(slug: str = "", tool_context: ToolContext = None) -> dict
         return {"status": "error", "message": "Remotion render failed:\n" + tail[-1500:]}
 
     size = out_path.stat().st_size
-    # Attach the MP4 as an artifact so the adk web dev UI can play it inline.
-    # (Via AgentTool's ForwardingArtifactService this lands in the user's session.)
+    # How the user gets the finished video out of the dev UI:
+    #   - VIDEO_BUCKET set (the Docker image / Cloud Run): upload the MP4 to that GCS
+    #     bucket and return a public download link. We do NOT also attach it as an
+    #     artifact, because the dev UI fetches the artifact as one base64 JSON blob
+    #     and Cloud Run rejects responses over 32 MiB ("response size too large" ->
+    #     500). The link downloads straight from GCS, at any size.
+    #   - Otherwise (plain local `adk web`): attach it as an artifact so it still
+    #     plays inline, as before.
+    bucket = os.environ.get("VIDEO_BUCKET", "").strip()
     artifact_name = None
-    if tool_context is not None and size <= 64_000_000:
+    download_url = None
+    download_error = None
+    if bucket:
+        try:
+            download_url = await asyncio.to_thread(
+                _upload_to_gcs, bucket, out_path, f"{resolved}.mp4"
+            )
+        except Exception as exc:  # noqa: BLE001 - file is still on disk; report why
+            download_error = str(exc)
+    elif tool_context is not None and size <= 64_000_000:
         try:
             await tool_context.save_artifact(
                 f"{resolved}.mp4",
@@ -1074,6 +1112,8 @@ async def render_video(slug: str = "", tool_context: ToolContext = None) -> dict
         "slug": resolved,
         "video": _rel(out_path),
         "artifact": artifact_name,
+        "download_url": download_url,
+        "download_error": download_error,
         "scenes": len(scenes),
         "size_mb": round(size / 1_000_000, 2),
     }
@@ -1133,9 +1173,16 @@ video_render_agent = Agent(
         "Work out the project slug from the request and call `render_video(slug)` "
         "exactly once (empty string = most recent project). Rendering can take a "
         "few minutes — just wait for the tool to return.\n"
-        "On success the video is attached as an artifact and plays inside the dev "
-        "UI: tell the user the video is shown above (also in the Artifacts panel), "
-        "and give the saved video path, the number of scenes, and the size in MB.\n"
+        "On success, report based on what the tool returns:\n"
+        "- If `download_url` is set, give the user a clickable Markdown DOWNLOAD "
+        "link to it, e.g. \"[⬇ Download the video](<download_url>)\", plus the saved "
+        "video path, the number of scenes, and the size in MB.\n"
+        "- Else if `download_error` is set, tell the user the render SUCCEEDED (give "
+        "the saved path + size) but uploading the download link failed, and show the "
+        "`download_error` text verbatim.\n"
+        "- Otherwise `artifact` is set: the video is attached and plays inside the "
+        "dev UI — tell the user it is shown above (also in the Artifacts panel), and "
+        "give the saved video path, the number of scenes, and the size in MB.\n"
         "If it returns an error, show the user the EXACT error message verbatim.\n"
         "Only report what the tool returns."
     ),
@@ -1177,15 +1224,18 @@ and finally a rendered MP4 (photo background + narration + on-screen captions, v
 Remotion). Every project is saved under workdir/<slug>/ so it can be resumed. Work
 through the steps in order, one at a time.
 
-<<RESUME_STEP>>STEP 1 — Get the title (NEW projects).
-If the user has not already given one, ask exactly ONE short question and nothing
-else: "What's the title of your video? (Optionally add a short description of what
-it should cover.)" Their answer is the TITLE; any extra detail is the DESCRIPTION —
-use it as guidance and save it as the project's topic. Use the title as given; do
-not invent your own (only make up a short, catchy title if they gave a description
-with no clear title). The video has 7 scenes by default — use a different count
-only if the user names one, and keep it between 3 and 12. Do not ask about the
-scene count otherwise.
+<<RESUME_STEP>>STEP 1 — Get the idea (NEW projects).
+If the user has not already said what they want, ask exactly ONE short question and
+nothing else: "What should the video be about? (e.g. 'benefits of wearing
+sunscreen'). You can also be more detailed and say how it should be structured —
+e.g. 'top 3 countries with most tourists — 4 scenes: an intro plus one per country,
+ordered from third to first place'." Their answer is the TOPIC/idea; any extra
+detail (structure, ordering, scene count) is guidance you MUST follow. Invent a
+short, catchy TITLE yourself from the idea — never ask the user for a title.
+Decide the scene count N: default to 5; use a different number if the user names
+one, OR if the idea clearly implies a structure (e.g. a "top 3 …" ranking -> 4
+scenes: an intro + one per item). Always keep N between 3 and 12; do not ask about
+the count otherwise.
 
 STEP 2 — Write the FULL script (story + scenes) in one go, then SHOW it.
 This is a vertical short (TikTok / Reels / YouTube Shorts): it must hook hard in
@@ -1208,18 +1258,32 @@ the first second and stay engaging to the very end. Create the whole script at o
          that BAKES IN the shared style. Make scene 1 especially bold and
          scroll-stopping. Show the story content in a visually engaging way, not
          just characters.
-Then call `save_video_script` with: the title; the topic (the description, or the
-title if none was given); the story verbatim; the scene array as a JSON string in
-`images_json`; and your style string. It returns `json_text` — the script as clean,
-2-space-indented JSON. PRINT `json_text` to the user VERBATIM inside a fenced
-```json code block so it reads professionally, and give the saved path
-(`script_path`) and the scene count. On error, fix the JSON and call it again.
+Then call `save_video_script` with: the TITLE you invented; the TOPIC (what the
+user said the video should be about); the story verbatim; the scene array as a JSON
+string in `images_json`; and your style string.
+After it succeeds, do NOT print the raw JSON. Present the script as a clean,
+readable summary in Markdown — NO code block, NO JSON, and WITHOUT the title,
+topic, or story. Show ONLY the shared visual style and the scenes, exactly like
+this (fill in the real content; keep each scene's narration verbatim):
+
+  **Style:** <the one-line visual style>
+
+  **Scene 1**
+  - Narration: <scene 1 text>
+  - Image: <scene 1 image description>
+
+  **Scene 2**
+  - Narration: …
+  - Image: …
+
+…continuing for every scene. On error from the tool, fix the JSON and call it again.
 
 STEP 3 — Confirm or change (single checkpoint), then generate the media.
 Ask the user to confirm the script, or tell you what to change:
   * Change -> apply their feedback. To rework the whole script, regenerate it per
     STEP 2 and save again; for a single scene prefer STEP 5 (cheaper). Show the
-    updated JSON and ask again — repeat until they clearly approve.
+    updated script in the same clean Style + Scenes format and ask again — repeat
+    until they clearly approve.
   * Confirm -> tell them this now generates, per scene, a 9:16 photo (Imagen 4 Fast)
     AND a narration clip (Google Cloud TTS) — real, billed calls; files that already
     exist are skipped — then call the `media_generator_agent` tool with just the
@@ -1269,7 +1333,8 @@ Rules:
 - Keep ONE shared visual style across all scenes. Pass story/text to tools verbatim.
 - For single-scene tweaks use STEP 5 — never re-plan scenes the user didn't ask to
   change.<<RESUME_RULE>>
-- Default to 7 scenes; keep any count between 3 and 12. Be concise.
+- Default to 5 scenes (or infer from the idea — e.g. a "top 3 …" ranking -> 4:
+  intro + one per item); keep any count between 3 and 12. Be concise.
 """
 
 INSTRUCTION = (

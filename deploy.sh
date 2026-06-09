@@ -124,9 +124,23 @@ echo "-> Enabling required APIs…"
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
   aiplatform.googleapis.com \
-  texttospeech.googleapis.com
+  texttospeech.googleapis.com \
+  storage.googleapis.com
 
-# --- 2. Build (Cloud Build, from the Dockerfile) and deploy ------------------
+# --- 2. Create the GCS bucket the finished videos download from --------------
+# render_video uploads workdir/<slug>/video.mp4 here, and the dev UI shows a
+# public download link to it — sidestepping Cloud Run's 32 MiB cap on the dev
+# UI's inline-artifact response. Override the name with VIDEO_BUCKET=...
+BUCKET="${VIDEO_BUCKET:-${PROJECT}-cvagent-videos}"
+echo "-> Ensuring video bucket gs://$BUCKET …"
+if ! "${GCLOUD[@]}" storage buckets describe "gs://$BUCKET" >/dev/null 2>&1; then
+  "${GCLOUD[@]}" storage buckets create "gs://$BUCKET" \
+    --location="$REGION" --uniform-bucket-level-access \
+    || { echo "ERROR: could not create gs://$BUCKET (name taken globally, or no permission)." >&2
+         echo "       Pick another name with VIDEO_BUCKET=<name> and re-run." >&2; exit 1; }
+fi
+
+# --- 3. Build (Cloud Build, from the Dockerfile) and deploy ------------------
 if [ "$ALLOW_UNAUTHENTICATED" = "true" ]; then
   AUTH_FLAG="--allow-unauthenticated"
 else
@@ -145,10 +159,10 @@ echo "-> Building with Cloud Build and deploying to Cloud Run (this can take a f
   --timeout "$TIMEOUT" \
   --min-instances 0 \
   --max-instances "$MAX_INSTANCES" \
-  --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$VERTEX_LOCATION" \
+  --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$VERTEX_LOCATION,VIDEO_BUCKET=$BUCKET" \
   "$AUTH_FLAG"
 
-# --- 3. Give the runtime service account access to Vertex AI -----------------
+# --- 4. IAM: Vertex AI for the runtime SA, plus video-bucket access ----------
 if [ "$SKIP_IAM" != "true" ]; then
   RUNTIME_SA="$("${GCLOUD[@]}" run services describe "$SERVICE" --region "$REGION" \
       --format="value(spec.template.spec.serviceAccountName)" 2>/dev/null || true)"
@@ -166,9 +180,20 @@ if [ "$SKIP_IAM" != "true" ]; then
     echo "     gcloud projects add-iam-policy-binding $PROJECT \\" >&2
     echo "       --member=serviceAccount:${RUNTIME_SA} --role=roles/aiplatform.user" >&2
   fi
+
+  echo "-> Letting the runtime SA write videos to gs://$BUCKET, and making it public-read"
+  "${GCLOUD[@]}" storage buckets add-iam-policy-binding "gs://$BUCKET" \
+    --member="serviceAccount:${RUNTIME_SA}" --role="roles/storage.objectAdmin" >/dev/null 2>&1 \
+    || echo "   WARNING: could not grant the runtime SA write access to gs://$BUCKET." >&2
+  # Public read so the download links work without auth (shareable promo videos).
+  if ! "${GCLOUD[@]}" storage buckets add-iam-policy-binding "gs://$BUCKET" \
+        --member="allUsers" --role="roles/storage.objectViewer" >/dev/null 2>&1; then
+    echo "   WARNING: could not make gs://$BUCKET public (org policy 'public access prevention'?)." >&2
+    echo "   Download links will 403 until the bucket allows public reads." >&2
+  fi
 fi
 
-# --- 4. Report ---------------------------------------------------------------
+# --- 5. Report ---------------------------------------------------------------
 URL="$("${GCLOUD[@]}" run services describe "$SERVICE" --region "$REGION" \
         --format="value(status.url)" 2>/dev/null || true)"
 

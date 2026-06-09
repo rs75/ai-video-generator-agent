@@ -55,16 +55,6 @@ story, generates each scene's photo + narration, and renders the final MP4
 > If it can't, pass it explicitly by adding
 > `-e GOOGLE_CLOUD_PROJECT=your-project-id` to the `docker run` command.
 
-### Try the full flow free (no API cost)
-
-Image and narration are real, **billed** Google Cloud calls (~$0.15 for a
-7-scene video, mostly Imagen). To exercise the entire pipeline with **zero** API
-cost — it writes tiny placeholder media instead of calling Imagen/TTS — add this
-to the `docker run` command:
-
-```bash
-  -e VIDEO_AGENT_FAKE_MEDIA=1
-```
 
 ## How it works
 
@@ -152,3 +142,5 @@ gcloud config / `-e` for Docker) — nothing is hardcoded.
 > Note: `adk web` is ADK's local dev UI, not a production server. For a hosted
 > deployment, put a custom front-end in front of `adk api_server`, or deploy to
 > Cloud Run.
+
+This project was developed to generate high-quality promotional videos for our apps:  [Attractiveness Test](https://attractivenesstest.com) and [Attractiveness AI](https://attractivenessai.com).

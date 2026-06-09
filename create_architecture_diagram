@@ -1,0 +1,42 @@
+run this code graph TD
+    User((User / Dev UI))
+
+    subgraph ADK_Pipeline [Google ADK Multi-Agent Pipeline]
+        Root[Root Agent<br>video_script_agent]
+        MediaAgent[Media Generator Agent<br>media_generator_agent]
+        RenderAgent[Video Render Agent<br>video_render_agent]
+    end
+
+    subgraph GCP_APIs [Google Cloud APIs]
+        Imagen[Vertex AI<br>Imagen 4 Fast]
+        TTS[Google Cloud TTS<br>v1beta1 + Timepoints]
+    end
+
+    subgraph Local_System [Local Storage & Rendering]
+        JSON[(script.json / media.json)]
+        ImagesDir[img/ folder<br>*.png]
+        AudioDir[audio/ folder<br>*.mp3, *.words.json]
+        Remotion[Remotion Node.js Engine]
+        MP4((video.mp4))
+    end
+
+    %% Interactions
+    User -- "1. Provides Title/Topic<br>2. Approve Content<br>3. Request Changes" --> Root
+    Root -- "Plans Story & Scenes" --> JSON
+    Root -- "AgentTool Call" --> MediaAgent
+    Root -- "AgentTool Call" --> RenderAgent
+
+    MediaAgent -- "generate_scene_media" --> JSON
+    MediaAgent -- "Parallel Call" --> Imagen
+    MediaAgent -- "Parallel Call" --> TTS
+
+    Imagen -- "Writes" --> ImagesDir
+    TTS -- "Writes" --> AudioDir
+
+    RenderAgent -- "render_video<br>subprocess" --> Remotion
+    Remotion -. "Reads Props" .-> JSON
+    Remotion -. "Reads Asset" .-> ImagesDir
+    Remotion -. "Reads Asset" .-> AudioDir
+    Remotion -- "Exports" --> MP4
+    
+    MP4 -- "Returned as UI Artifact" --> User 
