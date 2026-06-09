@@ -1,0 +1,36 @@
+# --- Secrets & local credentials/config (contain your GCP project id, paths) ---
+.env
+**/.env
+.claude/
+**/.adk/
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# --- Node / Remotion ---
+node_modules/
+remotion/out/
+
+# --- Generated projects & sample media (recreated at runtime) ---
+workdir/
+output/
+img/
+archive/
+
+# --- OS / editor ---
+.DS_Store
+**/.DS_Store
+
+
+archive/
+img/ 
+workdir/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+node_modules/
+remotion/out/

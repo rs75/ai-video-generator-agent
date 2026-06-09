@@ -1,0 +1,25 @@
+# Keep the build context small and never overwrite the Linux-built deps that
+# the Dockerfile installs (host node_modules / .venv are macOS-specific).
+.git
+.claude
+**/.adk
+.venv
+**/__pycache__
+**/*.pyc
+node_modules
+remotion/node_modules
+remotion/out
+
+# Secrets / local config — never bake a project id or credentials into the image.
+.env
+**/.env
+
+# Generated media / sample projects — recreated at runtime, large, not needed.
+workdir/
+output/
+img/
+archive/
+
+**/.DS_Store
+Dockerfile
+.dockerignore

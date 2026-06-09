@@ -1,0 +1,31 @@
+# What NOT to upload to Cloud Build when deploy.sh runs
+# `gcloud run deploy --source`. Mirrors .dockerignore, but deliberately KEEPS the
+# Dockerfile so Cloud Build builds the image from it (instead of buildpacks).
+
+.git
+.gitignore
+.claude
+**/.adk
+
+# Python — Linux deps are reinstalled inside the image, host .venv is macOS-only.
+.venv
+venv
+**/__pycache__
+**/*.pyc
+
+# Node / Remotion — reinstalled inside the image.
+node_modules
+remotion/node_modules
+remotion/out
+
+# Secrets / local config — never upload a project id or credentials.
+.env
+**/.env
+
+# Generated media / sample projects — large, recreated at runtime.
+workdir/
+output/
+img/
+archive/
+
+**/.DS_Store
