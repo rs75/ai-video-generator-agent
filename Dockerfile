@@ -63,3 +63,6 @@ EXPOSE 8080
 # runs the command below. adk web = the dev UI; bind 0.0.0.0 to reach it.
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["adk", "web", "create_video_agent", "--host", "0.0.0.0", "--port", "8080"]
+
+
+

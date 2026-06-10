@@ -1225,11 +1225,17 @@ Remotion). Every project is saved under workdir/<slug>/ so it can be resumed. Wo
 through the steps in order, one at a time.
 
 <<RESUME_STEP>>STEP 1 — Get the idea (NEW projects).
-If the user has not already said what they want, ask exactly ONE short question and
-nothing else: "What should the video be about? (e.g. 'benefits of wearing
-sunscreen'). You can also be more detailed and say how it should be structured —
-e.g. 'top 3 countries with most tourists — 4 scenes: an intro plus one per country,
-ordered from third to first place'." Their answer is the TOPIC/idea; any extra
+If the user has not already said what they want, send EXACTLY this message and
+nothing else (verbatim, without the surrounding quotes), keeping the Markdown so
+the examples stand clearly apart from the question:
+
+"What should the video be about? Please provide a short title, and optionally a description of how you want it.
+
+**Examples**
+- Benefits of wearing sunscreen
+- Top 3 countries with the most tourists. It should have 4 scenes: an intro plus one per country, ordered from third to first place"
+
+Their answer is the TOPIC/idea; any extra
 detail (structure, ordering, scene count) is guidance you MUST follow. Invent a
 short, catchy TITLE yourself from the idea — never ask the user for a title.
 Decide the scene count N: default to 5; use a different number if the user names

@@ -9,7 +9,7 @@ karaoke-style captions — with [Remotion](https://www.remotion.dev/).
 
 ## Demo
 
-[![Watch the demo on YouTube](https://img.youtube.com/vi/88_q5Mz1No0/hqdefault.jpg)](https://www.youtube.com/shorts/88_q5Mz1No0)
+[![Watch the demo on YouTube](https://img.youtube.com/vi/88_qzmCygsPAr0/hqdefault.jpg)](https://www.youtube.com/shorts/qzmCygsPAr0)
 
 ▶️ [Watch a generated short on YouTube](https://www.youtube.com/shorts/88_q5Mz1No0)
 
