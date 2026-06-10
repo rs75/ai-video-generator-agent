@@ -1,4 +1,4 @@
-# Video Script Agent — ADK + Gemini + Imagen 4 Fast + Cloud TTS + Remotion
+# Faceless Video Agent — ADK + Gemini + Imagen 4 Fast + Cloud TTS + Remotion
 
 Turn a **topic** into a portrait (9:16) short-form video. A multi-agent
 [Agent Development Kit (ADK)](https://google.github.io/adk-docs/) pipeline writes
