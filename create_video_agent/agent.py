@@ -36,6 +36,10 @@ Run it from the project root, in single-agent mode so only this agent loads:
 
 Tip: set VIDEO_AGENT_FAKE_MEDIA=1 to dry-run the media step (writes tiny
 placeholder files instead of calling — and paying for — Imagen / TTS).
+
+Tip: set MAX_SCENES_VIDEO=N (the Cloud Run demo deploy sets 3) to produce media
+and render the final video from only the first N scenes. Planning is never
+affected — the full script is always written and saved. Unset/0 = no cap.
 """
 
 import asyncio
@@ -89,6 +93,13 @@ SECTIONS_DEFAULT = 5
 SECTIONS_MIN = 3
 SECTIONS_MAX = 12
 
+# Cost guard for the HOSTED demo deployment. When MAX_SCENES_VIDEO is a positive
+# number (deploy.sh sets 3 on Cloud Run), media generation and the final render
+# use only the FIRST that-many scenes. PLANNING IS NEVER AFFECTED — the full
+# script (every scene's text + image description) is always written and saved.
+# Unset/0 (the default, i.e. self-hosting from GitHub) = no cap.
+MAX_SCENES_VIDEO = int(os.environ.get("MAX_SCENES_VIDEO", "0") or 0)
+
 # Resume support. When False (the default) the agent never lists or reopens previous
 # projects — every run starts a fresh video, and the list_projects / load_project
 # tools aren't even registered. Set True to list saved projects on startup and offer
@@ -129,6 +140,25 @@ def _upload_to_gcs(bucket: str, path: Path, object_name: str) -> str:
     blob.cache_control = "no-store"  # re-renders reuse the name; don't serve a stale copy
     blob.upload_from_filename(str(path), content_type="video/mp4")
     return f"https://storage.googleapis.com/{bucket}/{object_name}"
+
+
+def _scene_cap(total: int) -> int:
+    """How many of `total` scenes media generation / rendering may use."""
+    if MAX_SCENES_VIDEO > 0:
+        return min(total, MAX_SCENES_VIDEO)
+    return total
+
+
+def _demo_note(used: int, total: int):
+    """The bold notice shown after media generation and after a render whenever
+    the MAX_SCENES_VIDEO cap trimmed the video. None when nothing was trimmed."""
+    if used >= total:
+        return None
+    return (
+        f"**Notice: for this demo, generated videos are limited to the first "
+        f"{used} scenes. The self-hosted version on GitHub has no such "
+        f"restriction.**"
+    )
 
 
 def _slugify(title: str) -> str:
@@ -835,6 +865,12 @@ def generate_scene_media(
     what is MISSING or STALE (a scene whose text/description changed since its file
     was made) — unless `force`, or unless `sections` targets specific ones.
 
+    When the MAX_SCENES_VIDEO cap is active (the hosted demo), media is produced
+    for only the first that-many scenes; the saved script keeps every scene. In
+    that case `demo_note` in the result is a pre-formatted bold notice to show
+    the user, `total` counts only the scenes being produced, and `scenes_planned`
+    is the full script's scene count.
+
     Args:
         slug: Which project. Empty = most recent project.
         sections: Comma-separated section numbers to (re)generate ONLY, e.g. "6"
@@ -847,7 +883,8 @@ def generate_scene_media(
 
     Returns:
         {"status","slug","manifest","images_generated","audio_generated","total",
-         "img_dir","audio_dir","missing_images","missing_audio","errors"}.
+         "scenes_planned","demo_note","img_dir","audio_dir","missing_images",
+         "missing_audio","errors"}.
         `errors` is a list of {"section","kind","message"} for every image/audio
         that failed — show these messages to the user.
     """
@@ -866,7 +903,14 @@ def generate_scene_media(
     if not secs:
         return {"status": "error", "message": f"No sections in {_rel(p['script'])}."}
 
-    targets = _parse_targets(sections, total)
+    # MAX_SCENES_VIDEO cap (hosted demo): produce media for only the first
+    # `used` scenes. The script keeps every scene; targeting/force/missing
+    # checks below all stay within the capped range so nothing past it is
+    # ever generated or reported as missing.
+    used = _scene_cap(total)
+    note = _demo_note(used, total)
+
+    targets = _parse_targets(sections, used)
     style = data.get("style", "")
     fake = _fake()
     kinds = (kinds or "both").lower()
@@ -881,7 +925,7 @@ def generate_scene_media(
     #     untouched — so editing one scene only ever costs that one scene.
     manifest_prev = _load_manifest(resolved)
     states = _media_states(resolved, data, manifest_prev)
-    all_secs = set(range(1, total + 1))
+    all_secs = set(range(1, used + 1))
     if targets:
         img_regen = set(targets) if do_image else set()
         aud_regen = set(targets) if do_audio else set()
@@ -949,10 +993,12 @@ def generate_scene_media(
     }
     _write_json_atomic(p["manifest"], manifest)
 
-    missing_images = [i for i, s in enumerate(sections_out, 1) if not s["imagePath"]]
-    missing_audio = [i for i, s in enumerate(sections_out, 1) if not s["audioPath"]]
+    # Only scenes within the cap count as missing/failed — anything past it is
+    # intentionally not produced.
+    missing_images = [i for i, s in enumerate(sections_out[:used], 1) if not s["imagePath"]]
+    missing_audio = [i for i, s in enumerate(sections_out[:used], 1) if not s["audioPath"]]
     errors = []
-    for i, s in enumerate(sections_out, 1):
+    for i, s in enumerate(sections_out[:used], 1):
         if str(s["imageStatus"]).startswith("error"):
             errors.append({"section": i, "kind": "image", "message": s["imageStatus"]})
         if str(s["audioStatus"]).startswith("error"):
@@ -963,7 +1009,9 @@ def generate_scene_media(
         "manifest": _rel(p["manifest"]),
         "images_generated": jobs.get("image", {}).get("generated", 0),
         "audio_generated": jobs.get("audio", {}).get("generated", 0),
-        "total": total,
+        "total": used,
+        "scenes_planned": total,
+        "demo_note": note,
         "img_dir": _rel(p["img"]),
         "audio_dir": _rel(p["audio"]),
         "missing_images": missing_images,
@@ -980,19 +1028,26 @@ async def render_video(slug: str = "", tool_context: ToolContext = None) -> dict
 
     Each scene shows its image as a full-screen background while its narration
     audio plays, with the scene text shown as on-screen captions. Requires every
-    scene to already have BOTH an image and an audio file. The MP4 is saved to
-    workdir/<slug>/video.mp4. If VIDEO_BUCKET is set (the Docker image / Cloud Run),
-    the MP4 is uploaded there and a public download link is returned; otherwise it
-    is attached as an artifact so it plays inline in the `adk web` dev UI.
+    scene being rendered to already have BOTH an image and an audio file. The MP4
+    is saved to workdir/<slug>/video.mp4. The finished video is delivered
+    REDUNDANTLY: attached as an artifact so it plays inline in the `adk web` dev
+    UI (size permitting), AND — when VIDEO_BUCKET is set (the Docker image /
+    Cloud Run) — uploaded there for a public download link.
+
+    When the MAX_SCENES_VIDEO cap is active (the hosted demo), only the first
+    that-many scenes are rendered and `demo_note` in the result is a
+    pre-formatted bold notice to show the user.
 
     Args:
         slug: Which project. Empty = most recent project.
 
     Returns:
         On success: {"status","slug","video","artifact","download_url",
-        "download_error","scenes","size_mb"}. With VIDEO_BUCKET set, `download_url`
-        is a public link to the uploaded MP4 and `artifact` is null; otherwise the
-        MP4 is inlined as `artifact`. On failure: {"status":"error","message":...}.
+        "download_error","scenes","scenes_planned","demo_note","size_mb"}.
+        `artifact` is the inline-embedded artifact name (null only when the file
+        was too large to inline or attaching failed); `download_url` is a public
+        GCS link (null without VIDEO_BUCKET). On failure:
+        {"status":"error","message":...}.
     """
     resolved = _resolve_slug(slug)
     if resolved is None:
@@ -1007,6 +1062,14 @@ async def render_video(slug: str = "", tool_context: ToolContext = None) -> dict
     secs = data.get("sections") or data.get("images") or []
     if not secs:
         return {"status": "error", "message": f"No sections in {_rel(p['script'])}."}
+
+    # MAX_SCENES_VIDEO cap (hosted demo): render only the first `used` scenes.
+    # The script keeps every scene; the media/staleness checks below then only
+    # apply to the scenes actually being rendered.
+    scenes_planned = len(secs)
+    used = _scene_cap(scenes_planned)
+    note = _demo_note(used, scenes_planned)
+    secs = secs[:used]
 
     # Every scene must have an image AND audio, and neither may be STALE (its scene
     # was edited after the file was generated) — otherwise the render would silently
@@ -1078,14 +1141,14 @@ async def render_video(slug: str = "", tool_context: ToolContext = None) -> dict
         return {"status": "error", "message": "Remotion render failed:\n" + tail[-1500:]}
 
     size = out_path.stat().st_size
-    # How the user gets the finished video out of the dev UI:
-    #   - VIDEO_BUCKET set (the Docker image / Cloud Run): upload the MP4 to that GCS
-    #     bucket and return a public download link. We do NOT also attach it as an
-    #     artifact, because the dev UI fetches the artifact as one base64 JSON blob
-    #     and Cloud Run rejects responses over 32 MiB ("response size too large" ->
-    #     500). The link downloads straight from GCS, at any size.
-    #   - Otherwise (plain local `adk web`): attach it as an artifact so it still
-    #     plays inline, as before.
+    # How the user gets the finished video out of the dev UI — REDUNDANTLY:
+    #   - VIDEO_BUCKET set (the Docker image / Cloud Run): upload the MP4 to that
+    #     GCS bucket for a public download link.
+    #   - AND attach it as an artifact so it plays inline in the dev UI. The dev
+    #     UI fetches an artifact as one base64 JSON blob and Cloud Run rejects
+    #     responses over 32 MiB ("response size too large" -> 500), so behind a
+    #     bucket (i.e. deployed) the raw file must stay safely under that after
+    #     base64's ~4/3 inflation; plain local `adk web` has no such proxy cap.
     bucket = os.environ.get("VIDEO_BUCKET", "").strip()
     artifact_name = None
     download_url = None
@@ -1097,7 +1160,8 @@ async def render_video(slug: str = "", tool_context: ToolContext = None) -> dict
             )
         except Exception as exc:  # noqa: BLE001 - file is still on disk; report why
             download_error = str(exc)
-    elif tool_context is not None and size <= 64_000_000:
+    inline_limit = 22_000_000 if bucket else 64_000_000
+    if tool_context is not None and size <= inline_limit:
         try:
             await tool_context.save_artifact(
                 f"{resolved}.mp4",
@@ -1115,6 +1179,8 @@ async def render_video(slug: str = "", tool_context: ToolContext = None) -> dict
         "download_url": download_url,
         "download_error": download_error,
         "scenes": len(scenes),
+        "scenes_planned": scenes_planned,
+        "demo_note": note,
         "size_mb": round(size / 1_000_000, 2),
     }
 
@@ -1155,6 +1221,9 @@ media_generator_agent = Agent(
         "IMPORTANT: if `errors` is non-empty, show the user EACH entry with its "
         "exact message verbatim, e.g. 'Section 6 image failed: <message>'. Never "
         "hide or paraphrase the error text.\n"
+        "IMPORTANT: if `demo_note` is non-empty, end your report with it VERBATIM "
+        "as its own paragraph (it is pre-formatted in bold Markdown). Never drop, "
+        "shorten, or reword it.\n"
         "Only report what the tool returns — never invent paths or results."
     ),
     tools=[generate_scene_media],
@@ -1173,16 +1242,20 @@ video_render_agent = Agent(
         "Work out the project slug from the request and call `render_video(slug)` "
         "exactly once (empty string = most recent project). Rendering can take a "
         "few minutes — just wait for the tool to return.\n"
-        "On success, report based on what the tool returns:\n"
-        "- If `download_url` is set, give the user a clickable Markdown DOWNLOAD "
-        "link to it, e.g. \"[⬇ Download the video](<download_url>)\", plus the saved "
-        "video path, the number of scenes, and the size in MB.\n"
-        "- Else if `download_error` is set, tell the user the render SUCCEEDED (give "
-        "the saved path + size) but uploading the download link failed, and show the "
-        "`download_error` text verbatim.\n"
-        "- Otherwise `artifact` is set: the video is attached and plays inside the "
-        "dev UI — tell the user it is shown above (also in the Artifacts panel), and "
-        "give the saved video path, the number of scenes, and the size in MB.\n"
+        "On success, report based on what the tool returns. `artifact` and "
+        "`download_url` are independent and usually BOTH set — mention each that is:\n"
+        "- If `artifact` is set, the video is embedded and plays right here in the "
+        "chat (and in the Artifacts panel) — say so.\n"
+        "- If `download_url` is set, ALSO give a clickable Markdown DOWNLOAD link, "
+        "e.g. \"[⬇ Download the video](<download_url>)\".\n"
+        "- NEVER say the video is shown/embedded above unless `artifact` is set; if "
+        "only `download_url` is set, the download link is how the user gets it.\n"
+        "- If `download_error` is set, the render SUCCEEDED but creating the "
+        "download link failed — say so and show the `download_error` text verbatim.\n"
+        "- Always give the saved video path, the number of scenes, and the size in MB.\n"
+        "- If `demo_note` is non-empty, end your report with it VERBATIM as its own "
+        "paragraph (it is pre-formatted in bold Markdown). Never drop, shorten, or "
+        "reword it.\n"
         "If it returns an error, show the user the EXACT error message verbatim.\n"
         "Only report what the tool returns."
     ),
@@ -1300,16 +1373,26 @@ Ask the user to confirm the script, or tell you what to change:
     or `missing_audio` is non-empty, say EXACTLY which scenes are missing (image,
     audio, or both) and offer to retry only those (e.g. "<slug> sections=6", or
     "<slug> sections=6 kinds=audio"). Never regenerate everything unless the user
-    explicitly asks.
+    explicitly asks. If the media agent's report ends with a bold demo note (about
+    the video being limited to the first few scenes), include that note VERBATIM —
+    never drop or reword it. Finally, when nothing failed and nothing is missing,
+    ALWAYS end your reply by making the next step explicit and asking to continue,
+    exactly like: "The next step is to render the final video. Should I render it
+    now?" — never stop after the media report without asking this.
 
-STEP 4 — Render the final video (only when EVERY scene has BOTH an image and audio).
-Offer to render the portrait MP4 with Remotion: each scene's photo is the
-background while its narration plays, with the scene text shown as captions. Ask
-whether to render; if the user agrees, call the `video_render_agent` tool with the
-project slug. Rendering can take a few minutes. The MP4 is attached as an artifact
-and plays right here in the dev UI. Relay that the video is shown above (and in the
-Artifacts panel), plus the saved path, scene count, and size in MB. On error, show
-the EXACT error message verbatim.
+STEP 4 — Render the final video (only when every scene the media step covers has
+BOTH an image and audio). Offer to render the portrait MP4 with Remotion: each
+scene's photo is the background while its narration plays, with the scene text
+shown as captions. Ask whether to render; if the user agrees, call the
+`video_render_agent` tool with the project slug. Rendering can take a few minutes.
+Relay the render agent's report faithfully: the embedded inline video (only if it
+reports the video as attached/embedded), the Markdown download link (if it gives
+one — keep it clickable), the saved path, scene count, and size in MB. NEVER claim
+the video is shown above unless the render agent says it was embedded. If its
+report ends with a bold demo note, include that note VERBATIM. Then ALWAYS end
+your reply by asking exactly: "Do you want to make any changes to the video?"
+(scene tweaks are handled in STEP 5). On error, show the EXACT error message
+verbatim instead.
 
 STEP 5 — Revise ONE scene at a time (cheap; after media and after a render<<RESUME_S5>>).
 Only the named scene's media is regenerated, so you never re-pay for the other

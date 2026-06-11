@@ -30,4 +30,17 @@ if [ -z "${GOOGLE_CLOUD_PROJECT:-}" ]; then
 fi
 
 echo "-> Using Google Cloud project: $GOOGLE_CLOUD_PROJECT"
+
+# Durable artifacts: when a video bucket is configured (the Cloud Run deploy),
+# store ADK artifacts (the embedded MP4 the dev UI plays inline) in GCS instead
+# of instance memory/disk, so they survive instance restarts and the player in
+# the chat keeps working. Skipped if the command already names a service.
+if [ "$1" = "adk" ] && { [ "$2" = "web" ] || [ "$2" = "api_server" ]; } \
+   && [ -n "${VIDEO_BUCKET:-}" ]; then
+  case "$*" in
+    *--artifact_service_uri*) ;;
+    *) set -- "$@" --artifact_service_uri "gs://${VIDEO_BUCKET}" ;;
+  esac
+fi
+
 exec "$@"

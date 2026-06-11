@@ -23,9 +23,10 @@ REGION="${REGION:-us-central1}"                       # Cloud Run region
 VERTEX_LOCATION="${VERTEX_LOCATION:-us-central1}"     # Vertex AI (Gemini/Imagen) location
 SERVICE="${SERVICE:-video-agent}"                     # Cloud Run service name
 MEMORY="${MEMORY:-4Gi}"                               # per-instance memory (Chrome render is heavy)
-CPU="${CPU:-2}"                                       # per-instance vCPUs
+CPU="${CPU:-4}"                                       # per-instance vCPUs
 TIMEOUT="${TIMEOUT:-3600}"                            # request timeout, secs (max 3600; a render can take minutes)
-MAX_INSTANCES="${MAX_INSTANCES:-1}"                   # scale cap (cost guard)
+MAX_INSTANCES="${MAX_INSTANCES:-2}"                   # scale cap (cost guard)
+MAX_SCENES_VIDEO="${MAX_SCENES_VIDEO:-3}"             # demo cost guard: media + render use only the first N scenes (0 = no cap); planning always keeps the full script
 ALLOW_UNAUTHENTICATED="${ALLOW_UNAUTHENTICATED:-false}"
 SKIP_IAM="${SKIP_IAM:-false}"
 
@@ -51,7 +52,9 @@ Options:
 
 Environment overrides:
   REGION, VERTEX_LOCATION, SERVICE, MEMORY (4Gi), CPU (2), TIMEOUT (3600),
-  MAX_INSTANCES (2), ALLOW_UNAUTHENTICATED (false), SKIP_IAM (false).
+  MAX_INSTANCES (2), MAX_SCENES_VIDEO (3; media + final render use only the
+  first N scenes as a demo cost guard — script planning is unaffected; set 0
+  for no cap), ALLOW_UNAUTHENTICATED (false), SKIP_IAM (false).
 
 NOTE: the deployed adk web UI has NO authentication of its own, and every video
 makes real, BILLED Imagen + Cloud TTS calls — so the service is deployed PRIVATE
@@ -111,6 +114,7 @@ echo "   project:         $PROJECT"
 echo "   run region:      $REGION"
 echo "   vertex location: $VERTEX_LOCATION"
 echo "   resources:       cpu=$CPU memory=$MEMORY timeout=${TIMEOUT}s min-instances=0 max-instances=$MAX_INSTANCES"
+echo "   scene cap:       MAX_SCENES_VIDEO=$MAX_SCENES_VIDEO (media + render only; 0 = no cap)"
 echo "   public access:   $ALLOW_UNAUTHENTICATED"
 echo "=================================================================="
 
@@ -159,7 +163,7 @@ echo "-> Building with Cloud Build and deploying to Cloud Run (this can take a f
   --timeout "$TIMEOUT" \
   --min-instances 0 \
   --max-instances "$MAX_INSTANCES" \
-  --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$VERTEX_LOCATION,VIDEO_BUCKET=$BUCKET" \
+  --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$VERTEX_LOCATION,VIDEO_BUCKET=$BUCKET,MAX_SCENES_VIDEO=$MAX_SCENES_VIDEO" \
   "$AUTH_FLAG"
 
 # --- 4. IAM: Vertex AI for the runtime SA, plus video-bucket access ----------

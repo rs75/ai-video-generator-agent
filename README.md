@@ -38,8 +38,9 @@ specialized sub-agents:
    top, and CapCut-style captions that highlight each word as it's spoken.
    Portrait 1080×1920 at 30 fps; each scene lasts exactly as long as its audio.
 
-Everything is saved to disk as the agent works, so nothing is lost if you stop
-and come back later.
+
+![Architecture diagram](architecture.jpg)
+
 
 ## It's interactive
 
@@ -170,6 +171,11 @@ In `create_video_agent/agent.py`:
 - `IMAGE_MODEL = "imagen-4.0-fast-generate-001"`, `IMAGE_ASPECT_RATIO = "9:16"`.
 - `TTS_VOICE = "en-US-Standard-C"`, `TTS_LANGUAGE = "en-US"`.
 - Both agents use `gemini-2.5-flash`.
+- `MAX_SCENES_VIDEO` (env var, unset/`0` by default = no cap): when set to a
+  positive number, media generation and the final render use only the first
+  that-many scenes — a cost guard for hosted demos (`deploy.sh` sets `3` on
+  Cloud Run). Script planning is unaffected: the full script is always written
+  and saved. Self-hosting this repo as-is has no scene cap.
 
 Auth and project come from the environment (`.env` for local dev, or the mounted
 gcloud config / `-e` for Docker) — nothing is hardcoded.
