@@ -14,9 +14,9 @@ tweak any part of the video by just asking, and only that piece gets remade.
 
 ## Demo
 
-[![Watch the demo on YouTube](https://img.youtube.com/vi/88_qzmCygsPAr0/hqdefault.jpg)](https://www.youtube.com/shorts/qzmCygsPAr0)
+[![Watch a generated short on YouTube](https://i.ytimg.com/vi/qzmCygsPAr0/oar2.jpg?sqp=-oaymwEoCJUDENAFSFqQAgHyq4qpAxcIARUAAIhC2AEB4gEKCBgQAhgGOAFAAQ==&rs=AOn4CLAcsCOcDHbCKdCctyaxnuHt4WMXOw&usqp=CCk)](https://www.youtube.com/shorts/qzmCygsPAr0)
 
-▶️ [Watch a generated short on YouTube](https://www.youtube.com/shorts/88_q5Mz1No0)
+▶️ [Watch the demo on YouTube](https://youtu.be/bHAX8g84ygg)
 
 ## How it works
 
